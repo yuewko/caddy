@@ -44,6 +44,8 @@ import (
 	"time"
 
 	"github.com/mholt/caddy/caddyfile"
+
+	"reflect"
 )
 
 // Configurable application parameters
@@ -179,6 +181,10 @@ func (i *Instance) Restart(newCaddyfile Input) (*Instance, error) {
 		gs, srvOk := s.server.(GracefulServer)
 		ln, lnOk := s.listener.(Listener)
 		pc, pcOk := s.packet.(PacketConn)
+		fmt.Printf("(KODEBUG) TypeOf(s.listener) is '%s'\n", reflect.TypeOf(s.listener))
+		fmt.Printf("(KODEBUG) srvOk=%s, lnOk=%s, pcOk=%s\n", srvOk, lnOk, pcOk)
+		abc := s.listener.(Listener)
+		fmt.Printf("(KODEBUG) abc='%s'\n", abc)
 		if srvOk {
 			if lnOk && pcOk {
 				restartFds[gs.Address()] = restartTriple{server: gs, listener: ln, packet: pc}
@@ -199,7 +205,9 @@ func (i *Instance) Restart(newCaddyfile Input) (*Instance, error) {
 	newInst := &Instance{serverType: newCaddyfile.ServerType(), wg: i.wg}
 
 	// attempt to start new instance
+	fmt.Printf("(KODEBUG)caddy:Restart(): about to call startWithListenerFds, restartFds is '%s'\n", restartFds)
 	err := startWithListenerFds(newCaddyfile, newInst, restartFds)
+	fmt.Printf("(KODEBUG)caddy:Restart(): startWithListenFds return err='%s'\n", err)
 	if err != nil {
 		return i, err
 	}
@@ -207,10 +215,12 @@ func (i *Instance) Restart(newCaddyfile Input) (*Instance, error) {
 	// success! stop the old instance
 	for _, shutdownFunc := range i.onShutdown {
 		err = shutdownFunc()
+		fmt.Printf("(KODEBUG)caddy:Restart(): shutdownFunc return err=%s\n", err)
 		if err != nil {
 			return i, err
 		}
 	}
+	fmt.Printf("(KODEBUG)caddy:Restart(): about to call i.Stop()\n")
 	err = i.Stop()
 	if err != nil {
 		return i, err
@@ -274,7 +284,7 @@ type TCPServer interface {
 	// and returning it. It does not start accepting
 	// connections. For UDP-only servers, this method
 	// can be a no-op that returns (nil, nil).
-	Listen() (net.Listener, error)
+	Listen() (Listener, error)
 
 	// Serve starts serving using the provided listener.
 	// Serve must start the server loop nearly immediately,
@@ -282,7 +292,7 @@ type TCPServer interface {
 	// loop begins. Serve blocks indefinitely, or in other
 	// words, until the server is stopped. For UDP-only
 	// servers, this method can be a no-op that returns nil.
-	Serve(net.Listener) error
+	Serve(Listener) error
 }
 
 // UDPServer is a type that can listen and serve packets.
@@ -685,19 +695,26 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string]res
 
 		// If this is a reload and s is a GracefulServer,
 		// reuse the listener for a graceful restart.
+		fmt.Printf("(KODEBUG)caddy::startServers(): s is '%s'\n", reflect.TypeOf(s))
 		if gs, ok := s.(GracefulServer); ok && restartFds != nil {
+			fmt.Printf("(KODEBUG)caddy::startServers(): inside GracefulServer close listener\n")
 			addr := gs.Address()
+			fmt.Printf("(KODEBUG)caddy::startServers(): addr is '%s'\n", addr)
 			if old, ok := restartFds[addr]; ok {
 				// listener
 				if old.listener != nil {
+					fmt.Printf("(KODEBUG)caddy::startServers(): old listener not nil\n")
 					file, err := old.listener.File()
 					if err != nil {
 						return err
 					}
+					fmt.Printf("(KODEBUG)caddy::startServers(): old listener.File() OK\n")
 					ln, err = net.FileListener(file)
 					if err != nil {
 						return err
 					}
+
+					fmt.Printf("(KODEBUG)caddy::startServers(): about to close old listener\n")
 					err = file.Close()
 					if err != nil {
 						return err
@@ -722,6 +739,7 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string]res
 		}
 
 		if ln == nil {
+			fmt.Printf("(KODEBUG)caddy::startServers(): ln is nil, s is '%s'\n", reflect.TypeOf(s))
 			ln, err = s.Listen()
 			if err != nil {
 				return err
@@ -735,7 +753,7 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string]res
 		}
 
 		inst.wg.Add(2)
-		go func(s Server, ln net.Listener, pc net.PacketConn, inst *Instance) {
+		go func(s Server, ln Listener, pc net.PacketConn, inst *Instance) {
 			defer inst.wg.Done()
 
 			go func() {
