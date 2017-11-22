@@ -44,8 +44,6 @@ import (
 	"time"
 
 	"github.com/mholt/caddy/caddyfile"
-
-	"reflect"
 )
 
 // Configurable application parameters
@@ -182,8 +180,6 @@ func (i *Instance) Restart(newCaddyfile Input) (*Instance, error) {
 		ln, lnOk := s.listener.(Listener)
 		tlsLn, tlsLnOk := s.listener.(TLSlistener)
 		pc, pcOk := s.packet.(PacketConn)
-		fmt.Printf("(KODEBUG) TypeOf(s.listener) is '%s'\n", reflect.TypeOf(s.listener))
-		fmt.Printf("(KODEBUG) srvOk=%s, lnOk=%s, pcOk=%s\n", srvOk, lnOk, pcOk)
 		if srvOk {
 			if tlsLnOk {
 				restartFds[gs.Address()] = restartTriple{server: gs, tlsListener: tlsLn}
@@ -212,9 +208,7 @@ func (i *Instance) Restart(newCaddyfile Input) (*Instance, error) {
 	newInst := &Instance{serverType: newCaddyfile.ServerType(), wg: i.wg}
 
 	// attempt to start new instance
-	fmt.Printf("(KODEBUG)caddy:Restart(): about to call startWithListenerFds, restartFds is '%s'\n", restartFds)
 	err := startWithListenerFds(newCaddyfile, newInst, restartFds)
-	fmt.Printf("(KODEBUG)caddy:Restart(): startWithListenFds return err='%s'\n", err)
 	if err != nil {
 		return i, err
 	}
@@ -222,12 +216,10 @@ func (i *Instance) Restart(newCaddyfile Input) (*Instance, error) {
 	// success! stop the old instance
 	for _, shutdownFunc := range i.onShutdown {
 		err = shutdownFunc()
-		fmt.Printf("(KODEBUG)caddy:Restart(): shutdownFunc return err=%s\n", err)
 		if err != nil {
 			return i, err
 		}
 	}
-	fmt.Printf("(KODEBUG)caddy:Restart(): about to call i.Stop()\n")
 	err = i.Stop()
 	if err != nil {
 		return i, err
@@ -372,12 +364,18 @@ type Listener interface {
 	File() (*os.File, error)
 }
 
-// TLSListener is a net.Listener with an underlying file descriptor.
+// TLSlistener is similar to Listener, however it doesn't have
+// an underlying file descriptor itself. What it does have is an
+// underlying (inner) net.Listener which does have a file descriptor.
+// The Dup() method encapsulates the same operation that startServers()
+// perform on a Listener to get a new Listener.
 // A server's listener should implement this interface if it is
 // to support zero-downtime reloads.
 type TLSlistener interface {
 	net.Listener
-	Dup() (net.Listener, error)   // Return new Listener and close old file descriptor
+
+	// Returns new Listener and closes old file descriptor
+	Dup() (net.Listener, error)
 }
 
 // PacketConn is a net.PacketConn with an underlying file descriptor.
@@ -710,11 +708,8 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string]res
 
 		// If this is a reload and s is a GracefulServer,
 		// reuse the listener for a graceful restart.
-		fmt.Printf("(KODEBUG)caddy::startServers(): s is '%s'\n", reflect.TypeOf(s))
 		if gs, ok := s.(GracefulServer); ok && restartFds != nil {
-			fmt.Printf("(KODEBUG)caddy::startServers(): inside GracefulServer close listener\n")
 			addr := gs.Address()
-			fmt.Printf("(KODEBUG)caddy::startServers(): addr is '%s'\n", addr)
 			if old, ok := restartFds[addr]; ok {
 				// listener
 				if old.tlsListener != nil {
@@ -724,18 +719,16 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string]res
 					}
 				}
 				if old.listener != nil {
-					fmt.Printf("(KODEBUG)caddy::startServers(): old listener not nil\n")
 					file, err := old.listener.File()
 					if err != nil {
 						return err
 					}
-					fmt.Printf("(KODEBUG)caddy::startServers(): old listener.File() OK\n")
+
 					ln, err = net.FileListener(file)
 					if err != nil {
 						return err
 					}
 
-					fmt.Printf("(KODEBUG)caddy::startServers(): about to close old listener\n")
 					err = file.Close()
 					if err != nil {
 						return err
@@ -760,7 +753,6 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string]res
 		}
 
 		if ln == nil {
-			fmt.Printf("(KODEBUG)caddy::startServers(): ln is nil, s is '%s'\n", reflect.TypeOf(s))
 			ln, err = s.Listen()
 			if err != nil {
 				return err
@@ -774,7 +766,6 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string]res
 		}
 
 		inst.wg.Add(2)
-		fmt.Printf("s is '%s', ln is '%s', pc is '%s', inst is '%s'\n", s, ln, pc, inst)
 		go func(s Server, ln net.Listener, pc net.PacketConn, inst *Instance) {
 			defer inst.wg.Done()
 
@@ -977,10 +968,10 @@ func writePidFile() error {
 }
 
 type restartTriple struct {
-	server   GracefulServer
-	listener Listener
+	server      GracefulServer
+	listener    Listener
 	tlsListener TLSlistener
-	packet   PacketConn
+	packet      PacketConn
 }
 
 var (
