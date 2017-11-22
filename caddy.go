@@ -180,12 +180,19 @@ func (i *Instance) Restart(newCaddyfile Input) (*Instance, error) {
 	for _, s := range i.servers {
 		gs, srvOk := s.server.(GracefulServer)
 		ln, lnOk := s.listener.(Listener)
+		tlsLn, tlsLnOk := s.listener.(TLSlistener)
 		pc, pcOk := s.packet.(PacketConn)
 		fmt.Printf("(KODEBUG) TypeOf(s.listener) is '%s'\n", reflect.TypeOf(s.listener))
 		fmt.Printf("(KODEBUG) srvOk=%s, lnOk=%s, pcOk=%s\n", srvOk, lnOk, pcOk)
-		abc := s.listener.(Listener)
-		fmt.Printf("(KODEBUG) abc='%s'\n", abc)
 		if srvOk {
+			if tlsLnOk {
+				restartFds[gs.Address()] = restartTriple{server: gs, tlsListener: tlsLn}
+				continue
+			}
+			if tlsLnOk && pcOk {
+				restartFds[gs.Address()] = restartTriple{server: gs, tlsListener: tlsLn, packet: pc}
+				continue
+			}
 			if lnOk && pcOk {
 				restartFds[gs.Address()] = restartTriple{server: gs, listener: ln, packet: pc}
 				continue
@@ -284,7 +291,7 @@ type TCPServer interface {
 	// and returning it. It does not start accepting
 	// connections. For UDP-only servers, this method
 	// can be a no-op that returns (nil, nil).
-	Listen() (Listener, error)
+	Listen() (net.Listener, error)
 
 	// Serve starts serving using the provided listener.
 	// Serve must start the server loop nearly immediately,
@@ -292,7 +299,7 @@ type TCPServer interface {
 	// loop begins. Serve blocks indefinitely, or in other
 	// words, until the server is stopped. For UDP-only
 	// servers, this method can be a no-op that returns nil.
-	Serve(Listener) error
+	Serve(net.Listener) error
 }
 
 // UDPServer is a type that can listen and serve packets.
@@ -363,6 +370,14 @@ type GracefulServer interface {
 type Listener interface {
 	net.Listener
 	File() (*os.File, error)
+}
+
+// TLSListener is a net.Listener with an underlying file descriptor.
+// A server's listener should implement this interface if it is
+// to support zero-downtime reloads.
+type TLSlistener interface {
+	net.Listener
+	Dup() (net.Listener, error)   // Return new Listener and close old file descriptor
 }
 
 // PacketConn is a net.PacketConn with an underlying file descriptor.
@@ -702,6 +717,12 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string]res
 			fmt.Printf("(KODEBUG)caddy::startServers(): addr is '%s'\n", addr)
 			if old, ok := restartFds[addr]; ok {
 				// listener
+				if old.tlsListener != nil {
+					ln, err = old.tlsListener.Dup()
+					if err != nil {
+						return err
+					}
+				}
 				if old.listener != nil {
 					fmt.Printf("(KODEBUG)caddy::startServers(): old listener not nil\n")
 					file, err := old.listener.File()
@@ -753,7 +774,8 @@ func startServers(serverList []Server, inst *Instance, restartFds map[string]res
 		}
 
 		inst.wg.Add(2)
-		go func(s Server, ln Listener, pc net.PacketConn, inst *Instance) {
+		fmt.Printf("s is '%s', ln is '%s', pc is '%s', inst is '%s'\n", s, ln, pc, inst)
+		go func(s Server, ln net.Listener, pc net.PacketConn, inst *Instance) {
 			defer inst.wg.Done()
 
 			go func() {
@@ -957,6 +979,7 @@ func writePidFile() error {
 type restartTriple struct {
 	server   GracefulServer
 	listener Listener
+	tlsListener TLSlistener
 	packet   PacketConn
 }
 
